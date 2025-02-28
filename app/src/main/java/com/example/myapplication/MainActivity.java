@@ -5,12 +5,15 @@ import static com.example.myapplication.FileUtils.CONFIG_FILE;
 import android.app.ProgressDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.Looper;
+import android.os.PersistableBundle;
 import android.provider.Settings;
 import android.text.InputFilter;
 import android.text.InputType;
@@ -26,6 +29,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
@@ -36,6 +40,8 @@ import androidx.core.view.WindowInsetsCompat;
 import com.google.android.material.snackbar.Snackbar;
 
 import java.io.File;
+import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends AppCompatActivity {
     private Button connectButton;
@@ -48,6 +54,26 @@ public class MainActivity extends AppCompatActivity {
     // 添加成员变量
     private static final String VALID_CODE = "123456"; // 示例有效验证码
     private boolean isVerifying = false;
+    private boolean isVerifyCode = false;
+
+
+    // 添加成员变量
+    private TextView totalTimeTextView;
+    private long totalTimeMillis = 0;
+    private static final String TOTAL_TIME_KEY = "total_time";
+    private static final String PREFS_NAME = "vpn_stats";
+
+    // 添加成员变量
+    private TextView timerTextView;
+    private TextView timerTitle;
+    private Handler timerHandler = new Handler(Looper.getMainLooper());
+    private Runnable timerRunnable;
+    private long startTime = 0;
+
+    // 保存计时状态
+    private static final String TIMER_STATE = "timer_state";
+    private static final String START_TIME_KEY = "start_time";
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -66,6 +92,97 @@ public class MainActivity extends AppCompatActivity {
         //serverSpinner.setAdapter(adapter);
 
         connectButton.setOnClickListener(v -> toggleVPN());
+
+        timerTextView = findViewById(R.id.timerTextView);
+        timerTitle = findViewById(R.id.timerTitle);
+
+        initTimer();
+        //loadTotalTime();
+        //updateTotalTimeDisplay();
+    }
+
+    @Override
+    public void onSaveInstanceState(@NonNull Bundle outState, @NonNull PersistableBundle outPersistentState) {
+        super.onSaveInstanceState(outState, outPersistentState);
+        outState.putBoolean(TIMER_STATE, isConnected);
+        outState.putLong(START_TIME_KEY, startTime);
+    }
+
+    @Override
+    protected void onRestoreInstanceState(Bundle savedInstanceState) {
+        super.onRestoreInstanceState(savedInstanceState);
+        if (savedInstanceState.getBoolean(TIMER_STATE, false)) {
+            startTime = savedInstanceState.getLong(START_TIME_KEY);
+            startVPNConnection();
+        }
+    }
+
+    // 添加计时器暂停/继续功能
+    private boolean isTimerPaused = false;
+    private long pauseTime = 0;
+
+    public void pauseTimer() {
+        if (isConnected && !isTimerPaused) {
+            timerHandler.removeCallbacks(timerRunnable);
+            pauseTime = System.currentTimeMillis() - startTime;
+            isTimerPaused = true;
+        }
+    }
+
+    public void resumeTimer() {
+        if (isConnected && isTimerPaused) {
+            startTime += System.currentTimeMillis() - pauseTime;
+            timerHandler.postDelayed(timerRunnable, 0);
+            isTimerPaused = false;
+        }
+    }
+
+    // 添加计时完成回调
+    private OnTimerCompleteListener timerCompleteListener;
+
+    public interface OnTimerCompleteListener {
+        void onTimerComplete(long totalTime);
+    }
+
+    public void setOnTimerCompleteListener(OnTimerCompleteListener listener) {
+        this.timerCompleteListener = listener;
+    }
+
+    private void initTimer() {
+        timerRunnable = new Runnable() {
+            @Override
+            public void run() {
+                long millis = System.currentTimeMillis() - startTime;
+                int seconds = (int) (millis / 1000);
+                int minutes = seconds / 60;
+                int hours = minutes / 60;
+
+                timerTextView.setText(String.format(Locale.getDefault(),
+                        "%02d:%02d:%02d", hours % 24, minutes % 60, seconds % 60));
+
+                timerHandler.postDelayed(this, 1000);
+            }
+        };
+    }
+
+    // 加载累计时间
+    private void loadTotalTime() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        totalTimeMillis = prefs.getLong(TOTAL_TIME_KEY, 0);
+    }
+
+    // 保存累计时间
+    private void saveTotalTime() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        prefs.edit().putLong(TOTAL_TIME_KEY, totalTimeMillis).apply();
+    }
+
+    // 更新累计时间显示
+    private void updateTotalTimeDisplay() {
+        long hours = TimeUnit.MILLISECONDS.toHours(totalTimeMillis);
+        long minutes = TimeUnit.MILLISECONDS.toMinutes(totalTimeMillis) % 60;
+        String timeText = String.format("累计连接时间：%d小时%d分钟", hours, minutes);
+        totalTimeTextView.setText(timeText);
     }
 
     // 在 MainActivity.java 中修改 toggleVPN 方法
@@ -83,17 +200,33 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             boolean internetAvailable = NetworkUtils.isInternetAvailable();
             runOnUiThread(() -> {
-                if (internetAvailable) {
-                    showAuthDialog(); // 网络可用时显示授权弹窗
-                } else {
-                    showNetworkError("无法访问互联网");
+                if(!isConnected) {
+                    // 网络可用时显示授权弹窗
+                    if (internetAvailable) {
+                        if(!isVerifyCode) {
+                            showAuthDialog();
+                        }else{
+                            reStartVPNConnection();
+                        }
+                    } else {
+                        showNetworkError("无法访问互联网");
+                    }
+                }else{
+                    disconnectVPN();
                 }
             });
         }).start();
     }
 
+    // 添加成员变量
+    private AlertDialog dialog;
+
     // 授权弹窗实现
     private void showAuthDialog() {
+
+        if (dialog != null && dialog.isShowing()) {
+            return; // 防止重复显示
+        }
         AlertDialog.Builder builder = new AlertDialog.Builder(this, R.style.CenterDialogTheme);
 
         // 加载自定义布局
@@ -105,7 +238,7 @@ public class MainActivity extends AppCompatActivity {
                 .setCancelable(false)
                 .setPositiveButton("确认", (dialog, which) -> {
                     String code = authInput.getText().toString().trim();
-                    validateCode(code);
+                    isVerifyCode = validateCode(code);
                     if (validateCode(code)) {
                         startVPNConnection();
                     } else {
@@ -114,7 +247,7 @@ public class MainActivity extends AppCompatActivity {
                 })
                 .setNegativeButton("取消", (dialog, which) -> dialog.dismiss());
 
-        AlertDialog dialog = builder.create();
+        dialog = builder.create();
 
         // 显示后调整按钮样式
         dialog.setOnShowListener(dialogInterface -> {
@@ -129,6 +262,8 @@ public class MainActivity extends AppCompatActivity {
             positiveButton.setBackgroundResource(R.drawable.dialog_button_bg);
             negativeButton.setBackgroundResource(R.drawable.dialog_button_bg);
         });
+        dialog.setOnDismissListener(dialog -> this.dialog = null);
+
 
         dialog.show();
 
@@ -181,14 +316,38 @@ public class MainActivity extends AppCompatActivity {
 
     // 在startVPNConnection中添加验证状态
     private void startVPNConnection() {
+
         if (!isConnected) {
             isVerifying = true;
             showProgressDialog();
             connectVPN();
+            startTime = System.currentTimeMillis();
+            timerTextView.setVisibility(View.VISIBLE);
+            timerTitle.setVisibility(View.VISIBLE);
+            timerHandler.postDelayed(timerRunnable, 0);
+
         } else {
             disconnectVPN();
         }
     }
+
+    private void reStartVPNConnection() {
+
+        if (!isConnected) {
+            isVerifying = true;
+            showProgressDialog();
+            connectVPN();
+            startTime = System.currentTimeMillis() - pauseTime;
+            timerTextView.setVisibility(View.VISIBLE);
+            timerTitle.setVisibility(View.VISIBLE);
+            timerHandler.postDelayed(timerRunnable, 0);
+
+        } else {
+            disconnectVPN();
+        }
+    }
+
+
 
     // 添加加载弹窗
     private void showProgressDialog() {
@@ -219,6 +378,7 @@ public class MainActivity extends AppCompatActivity {
                 .show();
     }
     private void connectVPN() {
+
         Intent intent = VpnService.prepare(this);
         if (intent != null) {
             startActivityForResult(intent, 0);
@@ -231,6 +391,11 @@ public class MainActivity extends AppCompatActivity {
         Intent intent = new Intent(this, BasicVPNService.class);
         stopService(intent);
         updateUI(false);
+        if (dialog != null && dialog.isShowing()) {
+            dialog.dismiss();
+        }
+        pauseTimer();
+
     }
 
     @Override
@@ -249,12 +414,29 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         registerNetworkCallback();
+        if (isConnected) {
+            timerHandler.postDelayed(timerRunnable, 0);
+        }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         unregisterNetworkCallback();
+        if (isConnected) {
+            timerHandler.removeCallbacks(timerRunnable);
+        }
+        if (dialog != null && dialog.isShowing()) {
+            dialog.dismiss();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (dialog != null && dialog.isShowing()) {
+            dialog.dismiss();
+        }
     }
 
     private void registerNetworkCallback() {
