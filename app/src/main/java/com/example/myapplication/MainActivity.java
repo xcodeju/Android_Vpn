@@ -56,12 +56,9 @@ public class MainActivity extends AppCompatActivity {
     private boolean isVerifying = false;
     private boolean isVerifyCode = false;
 
+    private VPNManager vpnManager;
+    private NetworkMonitor networkMonitor;
 
-    // 添加成员变量
-    private TextView totalTimeTextView;
-    private long totalTimeMillis = 0;
-    private static final String TOTAL_TIME_KEY = "total_time";
-    private static final String PREFS_NAME = "vpn_stats";
 
     // 添加成员变量
     private TextView timerTextView;
@@ -69,6 +66,9 @@ public class MainActivity extends AppCompatActivity {
     private Handler timerHandler = new Handler(Looper.getMainLooper());
     private Runnable timerRunnable;
     private long startTime = 0;
+    // 添加成员变量
+    private long pausedTime = 0;
+    private long pauseStartTime = 0;
 
     // 保存计时状态
     private static final String TIMER_STATE = "timer_state";
@@ -79,24 +79,45 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        vpnManager = new VPNManager(this);
+        networkMonitor = new NetworkMonitor(this);
 
         connectButton = findViewById(R.id.connectButton);
         statusTextView = findViewById(R.id.statusTextView);
+        // 设置计时监听
+        vpnManager.setTimerListener(millis -> {
+            int seconds = (int) (millis / 1000);
+            int minutes = seconds / 60;
+            int hours = minutes / 60;
+            String timeText = String.format(Locale.getDefault(),
+                    "%02d:%02d:%02d", hours % 24, minutes % 60, seconds % 60);
+            timerTextView.setText(timeText);
+        });
+        // 设置网络监听
+        networkMonitor.startMonitoring(new NetworkMonitor.NetworkListener() {
+            @Override
+            public void onNetworkAvailable() {
+                if (isConnected) {
+                    startVPNConnection();
+                }
+            }
+
+            @Override
+            public void onNetworkLost() {
+               disconnectVPN();
+               connectButton.setText("连接已断开");
+            }
+        });
+
         //serverSpinner = findViewById(R.id.serverSpinner);
 
-//        // 服务器列表
-//        String[] servers = {"US Server", "UK Server", "JP Server"};
-//        ArrayAdapter<String> adapter = new ArrayAdapter<>(
-//                this, android.R.layout.simple_spinner_item, servers);
-//        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        //serverSpinner.setAdapter(adapter);
 
         connectButton.setOnClickListener(v -> toggleVPN());
 
         timerTextView = findViewById(R.id.timerTextView);
         timerTitle = findViewById(R.id.timerTitle);
 
-        initTimer();
+        //initTimer();
         //loadTotalTime();
         //updateTotalTimeDisplay();
     }
@@ -119,23 +140,7 @@ public class MainActivity extends AppCompatActivity {
 
     // 添加计时器暂停/继续功能
     private boolean isTimerPaused = false;
-    private long pauseTime = 0;
 
-    public void pauseTimer() {
-        if (isConnected && !isTimerPaused) {
-            timerHandler.removeCallbacks(timerRunnable);
-            pauseTime = System.currentTimeMillis() - startTime;
-            isTimerPaused = true;
-        }
-    }
-
-    public void resumeTimer() {
-        if (isConnected && isTimerPaused) {
-            startTime += System.currentTimeMillis() - pauseTime;
-            timerHandler.postDelayed(timerRunnable, 0);
-            isTimerPaused = false;
-        }
-    }
 
     // 添加计时完成回调
     private OnTimerCompleteListener timerCompleteListener;
@@ -148,45 +153,9 @@ public class MainActivity extends AppCompatActivity {
         this.timerCompleteListener = listener;
     }
 
-    private void initTimer() {
-        timerRunnable = new Runnable() {
-            @Override
-            public void run() {
-                long millis = System.currentTimeMillis() - startTime;
-                int seconds = (int) (millis / 1000);
-                int minutes = seconds / 60;
-                int hours = minutes / 60;
 
-                timerTextView.setText(String.format(Locale.getDefault(),
-                        "%02d:%02d:%02d", hours % 24, minutes % 60, seconds % 60));
-
-                timerHandler.postDelayed(this, 1000);
-            }
-        };
-    }
-
-    // 加载累计时间
-    private void loadTotalTime() {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        totalTimeMillis = prefs.getLong(TOTAL_TIME_KEY, 0);
-    }
-
-    // 保存累计时间
-    private void saveTotalTime() {
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        prefs.edit().putLong(TOTAL_TIME_KEY, totalTimeMillis).apply();
-    }
-
-    // 更新累计时间显示
-    private void updateTotalTimeDisplay() {
-        long hours = TimeUnit.MILLISECONDS.toHours(totalTimeMillis);
-        long minutes = TimeUnit.MILLISECONDS.toMinutes(totalTimeMillis) % 60;
-        String timeText = String.format("累计连接时间：%d小时%d分钟", hours, minutes);
-        totalTimeTextView.setText(timeText);
-    }
 
     // 在 MainActivity.java 中修改 toggleVPN 方法
-
 
     // 修改后的toggleVPN方法
     private void toggleVPN() {
@@ -200,18 +169,18 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             boolean internetAvailable = NetworkUtils.isInternetAvailable();
             runOnUiThread(() -> {
-                if(!isConnected) {
+                if (!isConnected) {
                     // 网络可用时显示授权弹窗
                     if (internetAvailable) {
-                        if(!isVerifyCode) {
+                        if (!isVerifyCode) {
                             showAuthDialog();
-                        }else{
-                            reStartVPNConnection();
+                        } else {
+                            startVPNConnection();
                         }
                     } else {
                         showNetworkError("无法访问互联网");
                     }
-                }else{
+                } else {
                     disconnectVPN();
                 }
             });
@@ -283,7 +252,7 @@ public class MainActivity extends AppCompatActivity {
         // 首次使用：保存输入的授权码
         if (!FileUtils.configExists(this)) {
             FileUtils.saveAuthCode(this, inputCode);
-            Toast.makeText(this,"初始授权码已保存",Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "初始授权码已保存", Toast.LENGTH_SHORT).show();
             return true;
         }
 
@@ -296,6 +265,7 @@ public class MainActivity extends AppCompatActivity {
             return false;
         }
     }
+
     public static void resetAuthCode(Context context) {
         File file = new File(context.getFilesDir(), CONFIG_FILE);
         if (file.exists()) {
@@ -316,37 +286,17 @@ public class MainActivity extends AppCompatActivity {
 
     // 在startVPNConnection中添加验证状态
     private void startVPNConnection() {
-
+        vpnManager.startVPN();
         if (!isConnected) {
             isVerifying = true;
             showProgressDialog();
             connectVPN();
-            startTime = System.currentTimeMillis();
             timerTextView.setVisibility(View.VISIBLE);
             timerTitle.setVisibility(View.VISIBLE);
-            timerHandler.postDelayed(timerRunnable, 0);
-
         } else {
             disconnectVPN();
         }
     }
-
-    private void reStartVPNConnection() {
-
-        if (!isConnected) {
-            isVerifying = true;
-            showProgressDialog();
-            connectVPN();
-            startTime = System.currentTimeMillis() - pauseTime;
-            timerTextView.setVisibility(View.VISIBLE);
-            timerTitle.setVisibility(View.VISIBLE);
-            timerHandler.postDelayed(timerRunnable, 0);
-
-        } else {
-            disconnectVPN();
-        }
-    }
-
 
 
     // 添加加载弹窗
@@ -377,6 +327,7 @@ public class MainActivity extends AppCompatActivity {
                         new Intent(Settings.ACTION_WIFI_SETTINGS)))
                 .show();
     }
+
     private void connectVPN() {
 
         Intent intent = VpnService.prepare(this);
@@ -394,8 +345,7 @@ public class MainActivity extends AppCompatActivity {
         if (dialog != null && dialog.isShowing()) {
             dialog.dismiss();
         }
-        pauseTimer();
-
+        vpnManager.disconnectVPN();
     }
 
     @Override
@@ -409,25 +359,22 @@ public class MainActivity extends AppCompatActivity {
     }
 
 
-
     @Override
     protected void onResume() {
         super.onResume();
-        registerNetworkCallback();
+        //registerNetworkCallback();
         if (isConnected) {
-            timerHandler.postDelayed(timerRunnable, 0);
+            startVPNConnection();
         }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        unregisterNetworkCallback();
+
+        networkMonitor.stopMonitoring();
         if (isConnected) {
-            timerHandler.removeCallbacks(timerRunnable);
-        }
-        if (dialog != null && dialog.isShowing()) {
-            dialog.dismiss();
+            disconnectVPN();
         }
     }
 
@@ -439,31 +386,4 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void registerNetworkCallback() {
-        ConnectivityManager cm = (ConnectivityManager)
-                getSystemService(Context.CONNECTIVITY_SERVICE);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            networkCallback = new ConnectivityManager.NetworkCallback() {
-                @Override
-                public void onLost(Network network) {
-                    runOnUiThread(() -> {
-                        if (isConnected) {
-                            disconnectVPN();
-                            showNetworkError("网络连接已断开");
-                        }
-                    });
-                }
-            };
-            cm.registerDefaultNetworkCallback(networkCallback);
-        }
-    }
-
-    private void unregisterNetworkCallback() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && networkCallback != null) {
-            ConnectivityManager cm = (ConnectivityManager)
-                    getSystemService(Context.CONNECTIVITY_SERVICE);
-            cm.unregisterNetworkCallback(networkCallback);
-        }
-    }
 }
