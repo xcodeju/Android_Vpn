@@ -9,6 +9,9 @@
         tools:ignore="ProtectedPermissions" />
     <!-- 在 AndroidManifest.xml 添加 -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
 
     <application
         android:allowBackup="true"
@@ -32,9 +35,10 @@
 
 
         <service
-            android:name=".BasicVPNService"
+            android:name=".MyVpnService"
+            android:exported="true"
             android:permission="android.permission.BIND_VPN_SERVICE"
-            android:exported="true">
+            android:process=":vpnProcess"> <!-- 指定进程名称 -->
             <intent-filter>
                 <action android:name="android.net.VpnService"/>
             </intent-filter>

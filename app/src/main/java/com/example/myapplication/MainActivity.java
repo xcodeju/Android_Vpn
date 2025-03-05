@@ -3,17 +3,23 @@ package com.example.myapplication;
 import static com.example.myapplication.FileUtils.CONFIG_FILE;
 
 import android.app.ProgressDialog;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.VpnService;
-import android.os.Build;
+
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
+import android.os.Message;
+import android.os.Messenger;
 import android.os.PersistableBundle;
+import android.os.RemoteException;
 import android.provider.Settings;
 import android.text.InputFilter;
 import android.text.InputType;
@@ -33,26 +39,20 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import com.google.android.material.snackbar.Snackbar;
 
 import java.io.File;
 import java.util.Locale;
-import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends AppCompatActivity {
     private Button connectButton;
-    private TextView statusTextView;
-    //private Spinner serverSpinner;
+
     private boolean isConnected = false;
     // 在 MainActivity.java 中添加
     private ConnectivityManager.NetworkCallback networkCallback;
 
-    // 添加成员变量
-    private static final String VALID_CODE = "123456"; // 示例有效验证码
     private boolean isVerifying = false;
     private boolean isVerifyCode = false;
 
@@ -63,27 +63,65 @@ public class MainActivity extends AppCompatActivity {
     // 添加成员变量
     private TextView timerTextView;
     private TextView timerTitle;
-    private Handler timerHandler = new Handler(Looper.getMainLooper());
-    private Runnable timerRunnable;
-    private long startTime = 0;
-    // 添加成员变量
-    private long pausedTime = 0;
-    private long pauseStartTime = 0;
 
-    // 保存计时状态
-    private static final String TIMER_STATE = "timer_state";
-    private static final String START_TIME_KEY = "start_time";
+    private Messenger serviceMessenger;
+    private boolean isBound;
+
+    private ServiceConnection serviceConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            serviceMessenger = new Messenger(service);
+            isBound = true;
+
+
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            serviceMessenger = null;
+            isBound = false;
+        }
+    };
+
+    private BroadcastReceiver vpnStatusReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            boolean isConnected = intent.getBooleanExtra("isConnected", false);
+            updateUI(false);
+            vpnManager.disconnectVPN();
+        }
+    };
+
+    private void stopVpn(){
+        // 发送消息到服务
+        Message msg = Message.obtain(null, 1);
+        Bundle bundle = new Bundle();
+        bundle.putString("msg", "Hello from client");
+        msg.setData(bundle);
+        try {
+            serviceMessenger.send(msg);
+        } catch (RemoteException e) {
+            e.printStackTrace();
+        }
+    }
+    
 
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // 注册广播接收器
+        LocalBroadcastManager.getInstance(this)
+                .registerReceiver(vpnStatusReceiver, new IntentFilter("VPN_STATUS_UPDATE"));
         setContentView(R.layout.activity_main);
+
+        // 绑定到 VPN 服务
+        Intent intent = new Intent(this, MyVpnService.class);
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
         vpnManager = new VPNManager(this);
         networkMonitor = new NetworkMonitor(this);
 
         connectButton = findViewById(R.id.connectButton);
-        statusTextView = findViewById(R.id.statusTextView);
         // 设置计时监听
         vpnManager.setTimerListener(millis -> {
             int seconds = (int) (millis / 1000);
@@ -109,7 +147,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        //serverSpinner = findViewById(R.id.serverSpinner);
+
 
 
         connectButton.setOnClickListener(v -> toggleVPN());
@@ -117,41 +155,26 @@ public class MainActivity extends AppCompatActivity {
         timerTextView = findViewById(R.id.timerTextView);
         timerTitle = findViewById(R.id.timerTitle);
 
-        //initTimer();
-        //loadTotalTime();
-        //updateTotalTimeDisplay();
+
     }
 
-    @Override
-    public void onSaveInstanceState(@NonNull Bundle outState, @NonNull PersistableBundle outPersistentState) {
-        super.onSaveInstanceState(outState, outPersistentState);
-        outState.putBoolean(TIMER_STATE, isConnected);
-        outState.putLong(START_TIME_KEY, startTime);
-    }
-
-    @Override
-    protected void onRestoreInstanceState(Bundle savedInstanceState) {
-        super.onRestoreInstanceState(savedInstanceState);
-        if (savedInstanceState.getBoolean(TIMER_STATE, false)) {
-            startTime = savedInstanceState.getLong(START_TIME_KEY);
-            startVPNConnection();
-        }
-    }
-
-    // 添加计时器暂停/继续功能
-    private boolean isTimerPaused = false;
+//    @Override
+//    public void onSaveInstanceState(@NonNull Bundle outState, @NonNull PersistableBundle outPersistentState) {
+//        super.onSaveInstanceState(outState, outPersistentState);
+//        outState.putBoolean(TIMER_STATE, isConnected);
+//        outState.putLong(START_TIME_KEY, startTime);
+//    }
+//
+//    @Override
+//    protected void onRestoreInstanceState(Bundle savedInstanceState) {
+//        super.onRestoreInstanceState(savedInstanceState);
+//        if (savedInstanceState.getBoolean(TIMER_STATE, false)) {
+//            startTime = savedInstanceState.getLong(START_TIME_KEY);
+//            startVPNConnection();
+//        }
+//    }
 
 
-    // 添加计时完成回调
-    private OnTimerCompleteListener timerCompleteListener;
-
-    public interface OnTimerCompleteListener {
-        void onTimerComplete(long totalTime);
-    }
-
-    public void setOnTimerCompleteListener(OnTimerCompleteListener listener) {
-        this.timerCompleteListener = listener;
-    }
 
 
 
@@ -293,8 +316,6 @@ public class MainActivity extends AppCompatActivity {
             connectVPN();
             timerTextView.setVisibility(View.VISIBLE);
             timerTitle.setVisibility(View.VISIBLE);
-        } else {
-            disconnectVPN();
         }
     }
 
@@ -317,7 +338,13 @@ public class MainActivity extends AppCompatActivity {
     private void updateUI(boolean connected) {
         isConnected = connected;
         //statusTextView.setText(connected ? "状态：已连接" : "状态：未连接");
-        connectButton.setText(connected ? "断开连接" : "连接VPN");
+        if (isConnected) {
+            connectButton.setText("断开连接");
+            connectButton.setBackgroundResource(R.drawable.button_connected);
+        } else {
+            connectButton.setText("开始连接");
+            connectButton.setBackgroundResource(R.drawable.button_disconnected);
+        }
         if (!connected) isVerifying = false;
     }
 
@@ -330,7 +357,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void connectVPN() {
 
-        Intent intent = VpnService.prepare(this);
+        Intent intent = MyVpnService.prepare(this);
         if (intent != null) {
             startActivityForResult(intent, 0);
         } else {
@@ -339,20 +366,21 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void disconnectVPN() {
-        Intent intent = new Intent(this, BasicVPNService.class);
-        stopService(intent);
         updateUI(false);
+        vpnManager.disconnectVPN();
+        stopVpn();
+//        Intent intent = new Intent(this, MyVpnService.class);
+//        stopService(intent);
         if (dialog != null && dialog.isShowing()) {
             dialog.dismiss();
         }
-        vpnManager.disconnectVPN();
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode == RESULT_OK) {
-            Intent intent = new Intent(this, BasicVPNService.class);
+            Intent intent = new Intent(this, MyVpnService.class);
             startService(intent);
             updateUI(true);
         }
@@ -383,6 +411,10 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
         if (dialog != null && dialog.isShowing()) {
             dialog.dismiss();
+        }
+        if (isBound) {
+            unbindService(serviceConnection);
+            isBound = false;
         }
     }
 

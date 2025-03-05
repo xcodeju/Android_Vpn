@@ -29,6 +29,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+    ndkVersion = "29.0.13113456 rc1"
 }
 
 dependencies {
@@ -40,4 +41,6 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
+    implementation(fileTree("libs"))
+    implementation(files("libs/jmx-sources.jar"))
 }

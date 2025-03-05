@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- res/drawable/button_connected.xml -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <solid android:color="#4CAF50"/> <!-- 绿色背景 -->
+    <corners android:radius="24dp"/> <!-- 圆角 -->
+    <stroke android:width="2dp" android:color="#388E3C"/> <!-- 边框 -->
+</shape>
